@@ -1,6 +1,5 @@
 # Breaking-data
 
-![R](https://img.shields.io/badge/R-276DC3?style=for-the-badge&logo=r&logoColor=white)
 ![Shiny](https://img.shields.io/badge/Shiny-75AADB?style=for-the-badge)
 ![Statistics](https://img.shields.io/badge/Statistics-Academic-blue?style=for-the-badge)
 
