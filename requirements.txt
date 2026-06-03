@@ -1,0 +1,9 @@
+numpy
+scipy
+scikit-image
+pandas
+matplotlib
+scikit-learn
+seaborn
+shiny
+kaggle
