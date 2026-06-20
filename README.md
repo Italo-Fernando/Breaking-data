@@ -27,6 +27,13 @@ venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
+### Como executar o projeto:
+
+```bash
+shiny run app.py
+```
+
+
 ## <img src="https://cdn.jsdelivr.net/gh/devicons/devicon/icons/github/github-original.svg" width="20"> Colaboração e Desenvolvimento
 
 
