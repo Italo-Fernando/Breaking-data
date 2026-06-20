@@ -3,11 +3,62 @@ import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
 from pathlib import Path
+from scipy.stats import norm
 from shiny import App, render, ui, reactive
 
 # --- Configuração do Visual ---
 sns.set_style("whitegrid")
 plt.rcParams.update({'font.family': 'sans-serif'})
+
+# --- Teste de hipótese: rótulos das opções (reutilizados na UI e nos textos) ---
+TEST_TYPES = {
+    "two_sided": "Bilateral",
+    "greater": "Unilateral à direita",
+    "less": "Unilateral à esquerda",
+}
+
+# Variáveis quantitativas testáveis (Year + colunas de vendas).
+TEST_VARS = {
+    "Year": "Ano de lançamento",
+    "Global_Sales": "Vendas Globais",
+    "NA_Sales": "Vendas na América do Norte",
+    "EU_Sales": "Vendas na Europa",
+    "JP_Sales": "Vendas no Japão",
+    "Other_Sales": "Vendas em outros Países",
+}
+
+
+def z_test_mean_known_variance(sample, mu0, pop_variance, test_type, alpha):
+    """Teste Z para a média populacional com variância conhecida.
+
+    Retorna um dict com a estatística do teste, o valor crítico, o p-valor
+    e a decisão. `sample` é uma Series/array já sem NaN.
+    """
+    n = len(sample)
+    if n == 0 or pop_variance <= 0:
+        return None
+
+    xbar = float(np.mean(sample))
+    sigma = np.sqrt(pop_variance)
+    z = (xbar - mu0) / (sigma / np.sqrt(n))
+
+    if test_type == "greater":          # H1: mu > mu0
+        critical = norm.ppf(1 - alpha)
+        reject = z > critical
+        p_value = 1 - norm.cdf(z)
+    elif test_type == "less":            # H1: mu < mu0
+        critical = norm.ppf(alpha)
+        reject = z < critical
+        p_value = norm.cdf(z)
+    else:                                # bilateral, H1: mu != mu0
+        critical = norm.ppf(1 - alpha / 2)
+        reject = abs(z) > critical
+        p_value = 2 * (1 - norm.cdf(abs(z)))
+
+    return {
+        "n": n, "xbar": xbar, "sigma": sigma, "z": z,
+        "critical": critical, "p_value": p_value, "reject": reject,
+    }
 
 custom_css = """
 <link href="https://fonts.googleapis.com/css2?family=Nunito:wght@400;700;800&display=swap" rel="stylesheet">
@@ -42,7 +93,7 @@ body { background-color: #f4f7f6; color: #333; font-family: 'Nunito', sans-serif
 
 app_ui = ui.page_fluid(
     ui.HTML(custom_css),
-    ui.div(ui.h2(" Video Games Analytics"), class_="header"),
+    ui.div(ui.h2(" Análise do dataset"), class_="header"),
     
     ui.layout_sidebar(
         ui.sidebar(
@@ -52,7 +103,7 @@ app_ui = ui.page_fluid(
             ui.input_select("publisher_select", "Publicadora:", choices={"all": "Todos"}),
             ui.hr(),
             ui.input_select("stat_factor", "Fator p/ Gráfico:", choices={"mean": "Média", "median": "Mediana", "std": "Desvio-Padrão", "count": "Amostra", "min": "Mínimo", "max": "Máximo"}),
-            ui.input_select("sales_metric", "Cartões de Detalhe:", choices={"Global_Sales": "Vendas Globais", "NA_Sales": "NA", "EU_Sales": "EU", "JP_Sales": "JP", "Other_Sales": "Outros"}),
+            ui.input_select("sales_metric", "Cartões de Detalhe:", choices={"Global_Sales": "Vendas Globais", "NA_Sales": "Vendas na América do Norte", "EU_Sales": "Vendas na Europa", "JP_Sales": "Vendas no Japão", "Other_Sales": "Vendas em outros Países"}),
         ),
         
         ui.navset_tab(
@@ -73,6 +124,32 @@ app_ui = ui.page_fluid(
                     ui.output_plot("unified_sales_box"),
                     class_="card"
                 )
+            ),
+            ui.nav_panel(
+                "Teste de hipótese",
+                ui.div(
+                    ui.div("Teste para a média (variância conhecida)", class_="card-title"),
+                    ui.p("Variável e filtros aplicados; a variância inicia na variância amostral (ajustável).",
+                         style="color:#7f8c8d; font-size:13px;"),
+                    ui.row(
+                        ui.column(6, ui.input_select("test_var", "Variável quantitativa:", choices=TEST_VARS)),
+                        ui.column(6, ui.input_radio_buttons("test_type", "Tipo de teste:", choices=TEST_TYPES)),
+                    ),
+                    ui.input_numeric("var_pop", "Variância populacional (σ²):", value=1, min=0.0001),
+                    ui.input_slider("mu0", "Valor de μ₀:", min=0, max=10, value=5),
+                    ui.input_slider("alpha", "Nível de significância (α):", min=0.01, max=0.20, value=0.05, step=0.01),
+                    class_="card"
+                ),
+                ui.div(
+                    ui.div("Resultado do teste", class_="card-title"),
+                    ui.output_ui("hypothesis_result"),
+                    class_="card"
+                ),
+                ui.div(
+                    ui.div("Distribuição sob H₀ e estatística do teste", class_="card-title"),
+                    ui.output_plot("hypothesis_plot"),
+                    class_="card"
+                )
             )
         )
     )
@@ -81,11 +158,13 @@ app_ui = ui.page_fluid(
 def server(input, output, session):
     @reactive.Calc
     def load_data():
-        try: 
-            df = pd.read_csv(Path("/home/kaori/Breaking-data/data/vgsales.csv"))
+        try:
+            csv_path = Path(__file__).resolve().parent / "data" / "vgsales.csv"
+            df = pd.read_csv(csv_path)
             for col in ['Platform', 'Genre', 'Publisher']: df[col] = df[col].astype('category')
             return df
-        except Exception: return None
+        except Exception:
+            return None
 
     @reactive.Effect
     def _update_filters():
@@ -104,6 +183,108 @@ def server(input, output, session):
         if g != "all": data = data[data['Genre'] == g]
         if pub != "all": data = data[data['Publisher'] == pub]
         return data
+
+    @reactive.Calc
+    def get_test_sample():
+        # Série da variável quantitativa selecionada para o teste, filtrada e sem NaN.
+        df = get_filtered_data()
+        if df is None or df.empty: return None
+        return df[input.test_var()].dropna()
+
+    @reactive.Effect
+    def _update_mu0_slider():
+        # Ajusta a faixa do slider de μ₀ ao intervalo real da variável.
+        sample = get_test_sample()
+        if sample is None or len(sample) == 0: return
+        lo, hi = float(sample.min()), float(sample.max())
+        if lo == hi: hi = lo + 1  # evita slider degenerado
+        raw = (hi - lo) / 100 or 0.01
+        # Passo inteiro em variáveis de grande amplitude (ex.: vendas), decimal nas pequenas.
+        step = max(1, round(raw)) if raw >= 1 else round(raw, 4)
+        ui.update_slider("mu0", min=round(lo, 4), max=round(hi, 4),
+                         value=round(float(sample.mean()), 4), step=step)
+
+    @reactive.Effect
+    def _update_var_pop():
+        # Inicia a variância populacional na variância amostral (ordem de grandeza realista).
+        sample = get_test_sample()
+        if sample is None or len(sample) < 2: return
+        ui.update_numeric("var_pop", value=round(float(sample.var()), 4))
+
+    @reactive.Calc
+    def test_result():
+        # Resultado do teste Z, compartilhado entre o texto e o gráfico.
+        sample = get_test_sample()
+        if sample is None: return None
+        return z_test_mean_known_variance(
+            sample, input.mu0(), input.var_pop(), input.test_type(), input.alpha()
+        )
+
+    @output
+    @render.ui
+    def hypothesis_result():
+        if get_test_sample() is None: return ui.p("Sem dados para o filtro selecionado.")
+        res = test_result()
+        if res is None:
+            return ui.p("Informe uma variância populacional positiva.", style="color:#c0392b;")
+
+        decisao = "Rejeita-se H₀" if res["reject"] else "Não se rejeita H₀"
+        cor = "#c0392b" if res["reject"] else "#27ae60"
+        linhas = {
+            "Hipótese H₀": f"μ = {input.mu0()}",
+            "Tipo de teste": TEST_TYPES[input.test_type()],
+            "Tamanho da amostra (n)": res["n"],
+            "Média amostral (x̄)": f"{res['xbar']:.4f}",
+            "Desvio-padrão (σ)": f"{res['sigma']:.4f}",
+            "Estatística do teste (Z)": f"{res['z']:.4f}",
+            "Valor crítico": f"{res['critical']:.4f}",
+            "p-valor": f"{res['p_value']:.4f}",
+        }
+        itens = [ui.tags.li(ui.tags.b(f"{k}: "), str(v)) for k, v in linhas.items()]
+        return ui.div(
+            ui.tags.ul(*itens, style="list-style:none; padding-left:0;"),
+            ui.div(decisao, style=f"font-size:20px; font-weight:800; color:{cor}; margin-top:10px;"),
+        )
+
+    @output
+    @render.plot
+    def hypothesis_plot():
+        res = test_result()
+        if res is None: return None
+        z, crit, tipo = res["z"], res["critical"], input.test_type()
+
+        # Eixo amplo o bastante para conter o Z e a região de rejeição.
+        lim = max(4.0, abs(z) + 1)
+        x = np.linspace(-lim, lim, 500)
+        y = norm.pdf(x)
+
+        fig, ax = plt.subplots(figsize=(8, 3.2), facecolor='none')
+        ax.plot(x, y, color='#2c3e50')
+
+        # Sombreia a(s) região(ões) de rejeição conforme o tipo de teste.
+        if tipo == "greater":
+            ax.fill_between(x, y, where=(x >= crit), color='#e74c3c', alpha=0.3)
+            ax.axvline(crit, color='#e74c3c', ls='--', label=f'Crítico = {crit:.2f}')
+        elif tipo == "less":
+            ax.fill_between(x, y, where=(x <= crit), color='#e74c3c', alpha=0.3)
+            ax.axvline(crit, color='#e74c3c', ls='--', label=f'Crítico = {crit:.2f}')
+        else:
+            ax.fill_between(x, y, where=(x >= crit), color='#e74c3c', alpha=0.3)
+            ax.fill_between(x, y, where=(x <= -crit), color='#e74c3c', alpha=0.3)
+            ax.axvline(crit, color='#e74c3c', ls='--', label=f'Crítico = ±{crit:.2f}')
+            ax.axvline(-crit, color='#e74c3c', ls='--')
+
+        # Z calculado e a posição de H0 (Z = 0).
+        ax.axvline(0, color='#bdc3c7', ls=':')
+        ax.axvline(z, color='#2980b9', lw=2, label=f'Z calc = {z:.2f}')
+
+        ax.set_yticks([])
+        ax.set_xlabel('Z')
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+        ax.spines['left'].set_visible(False)
+        ax.legend(loc='upper right', fontsize=9, frameon=False)
+        return fig
 
     @output
     @render.ui
