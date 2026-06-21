@@ -7,7 +7,6 @@ import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
 from shiny import App, render, ui, reactive
-from scipy.stats import norm
 
 # Configuração visual
 sns.set_style("whitegrid")
@@ -58,34 +57,10 @@ app_ui = ui.page_fluid(
                     ),
                     style="padding: 10px;"
                 )
-            ),
-            ui.nav_panel(
-                "Intervalo de confiança",
-                ui.div(
-                    ui.br(),
-                    ui.card(
-                        ui.h4("Intervalo de confiança normal para a média"),
-                        ui.p(
-                            "Selecione uma variável quantitativa e ajuste o nível de confiança "
-                            "para calcular o intervalo de confiança normal para a média populacional."
-                        ),
-                        ui.input_slider(
-                            "confidence_level",
-                            "Nível de confiança:",
-                            min=0.80,
-                            max=0.99,
-                            value=0.95,
-                            step=0.01
-                        ),
-                        ui.output_ui("confidence_interval_output")
-                    ),
-                    style="padding: 10px;"
-                )
             )
         )
     )
 )
-
 
 def server(input, output, session):
     @reactive.Calc
@@ -148,32 +123,6 @@ def server(input, output, session):
             'N': len(col), 'Média': col.mean(), 'Mediana': col.median(),
             'Desvio-padrão': col.std(), 'Mínimo': col.min(), 'Máximo': col.max()
         }
-    @reactive.Calc
-    def calculate_confidence_interval():
-        data = load_data()
-        var = input.variable_select()
-        if data is None or not var: return None
-        col = pd.to_numeric(data[var], errors="coerce").dropna()
-        if len(col) < 2:return {"erro": "A variável selecionada precisa ter pelo menos 2 valores válidos."}
-        n = len(col)
-        mean = col.mean()
-        std = col.std(ddof=1)
-        confidence_level = input.confidence_level()
-        alpha = 1 - confidence_level
-        z_critical = norm.ppf(1 - alpha / 2)
-        margin_error = z_critical * (std / np.sqrt(n))
-        lower_limit = mean - margin_error
-        upper_limit = mean + margin_error
-        return {
-            "n": n,
-            "mean": mean,
-            "std": std,
-            "confidence_level": confidence_level,
-            "z_critical": z_critical,
-            "margin_error": margin_error,
-            "lower_limit": lower_limit,
-            "upper_limit": upper_limit,
-        }
 
     @output
     @render.text
@@ -216,45 +165,5 @@ def server(input, output, session):
         data = load_data()
         if data is None: return pd.DataFrame()
         return data.head(15)
-    
-    @output
-    @render.ui
-    def confidence_interval_output():
-        result = calculate_confidence_interval()
-        if result is None: return ui.p("Aguardando seleção de arquivo e variável quantitativa.")
-        if "erro" in result:return ui.p(result["erro"], style="color:#c0392b; font-weight:bold;")
-        return ui.div(
-            ui.tags.ul(
-                ui.tags.li(
-                    ui.tags.b("Nível de confiança utilizado: "),
-                    f"{result['confidence_level'] * 100:.0f}%"
-                ),
-                ui.tags.li(
-                    ui.tags.b("Limite inferior: "),
-                    f"{result['lower_limit']:.4f}"
-                ),
-                ui.tags.li(
-                    ui.tags.b("Limite superior: "),
-                    f"{result['upper_limit']:.4f}"
-                ),
-                ui.tags.li(
-                    ui.tags.b("Tamanho da amostra: "),
-                    str(result["n"])
-                ),
-                ui.tags.li(
-                    ui.tags.b("Média amostral: "),
-                    f"{result['mean']:.4f}"
-                ),
-                ui.tags.li(
-                    ui.tags.b("Desvio-padrão amostral: "),
-                    f"{result['std']:.4f}"
-                ),
-            ),
-            ui.p(
-                f"Intervalo de confiança: "
-                f"[{result['lower_limit']:.4f}, {result['upper_limit']:.4f}]",
-                style="font-size:18px; font-weight:bold; margin-top:10px;"
-            )
-        )
 
 app = App(app_ui, server)
