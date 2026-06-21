@@ -1,63 +1,179 @@
-import sys
-import subprocess
-from pathlib import Path
-
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
+from pathlib import Path
+from scipy.stats import norm, linregress
 from shiny import App, render, ui, reactive
 
-# Configuração visual
+# --- Configuração do Visual ---
 sns.set_style("whitegrid")
-plt.rcParams['figure.figsize'] = (10, 6)
+plt.rcParams.update({'font.family': 'sans-serif'})
 
-# --- Lançamento do dashboard.py como app separado ---
-DASHBOARD_PORT = 8001
-DASHBOARD_URL = f"http://localhost:{DASHBOARD_PORT}"
-_dashboard_proc = None
+# --- Teste de hipótese: rótulos das opções (reutilizados na UI e nos textos) ---
+TEST_TYPES = {
+    "two_sided": "Bilateral",
+    "greater": "Unilateral à direita",
+    "less": "Unilateral à esquerda",
+}
 
-def ensure_dashboard_running():
-    """Sobe o dashboard.py num processo próprio (uma vez só)."""
-    global _dashboard_proc
-    if _dashboard_proc is None or _dashboard_proc.poll() is not None:
-        _dashboard_proc = subprocess.Popen(
-            [sys.executable, "-m", "shiny", "run", "dashboard.py", "--port", str(DASHBOARD_PORT)],
-            cwd=str(Path(__file__).resolve().parent),
-        )
+# Variáveis quantitativas testáveis (Year + colunas de vendas).
+TEST_VARS = {
+    "Year": "Ano de lançamento",
+    "Global_Sales": "Vendas Globais",
+    "NA_Sales": "Vendas na América do Norte",
+    "EU_Sales": "Vendas na Europa",
+    "JP_Sales": "Vendas no Japão",
+    "Other_Sales": "Vendas em outros Países",
+}
+
+
+def z_test_mean_known_variance(sample, mu0, pop_variance, test_type, alpha):
+    n = len(sample)
+    if n == 0 or pop_variance <= 0:
+        return None
+
+    xbar = float(np.mean(sample))
+    sigma = np.sqrt(pop_variance)
+    z = (xbar - mu0) / (sigma / np.sqrt(n))
+
+    if test_type == "greater":
+        critical = norm.ppf(1 - alpha)
+        reject = z > critical
+        p_value = 1 - norm.cdf(z)
+    elif test_type == "less":
+        critical = norm.ppf(alpha)
+        reject = z < critical
+        p_value = norm.cdf(z)
+    else:
+        critical = norm.ppf(1 - alpha / 2)
+        reject = abs(z) > critical
+        p_value = 2 * (1 - norm.cdf(abs(z)))
+
+    return {
+        "n": n, "xbar": xbar, "sigma": sigma, "z": z,
+        "critical": critical, "p_value": p_value, "reject": reject,
+    }
+
+custom_css = """
+<link href="https://fonts.googleapis.com/css2?family=Nunito:wght@400;700;800&display=swap" rel="stylesheet">
+<style>
+body { background-color: #f4f7f6; color: #333; font-family: 'Nunito', sans-serif; }
+
+.header {
+    background: #ffffff; padding: 25px; border-bottom: 4px solid #4fa3c4;
+    margin-bottom: 25px; text-align: center; color: #2c3e50;
+}
+
+/* Cards com efeito de hover */
+.card {
+    background-color: #ffffff; border: none; border-radius: 16px;
+    padding: 25px; margin-bottom: 25px;
+    box-shadow: 0 4px 6px rgba(0,0,0,0.05);
+    transition: transform 0.3s ease, box-shadow 0.3s ease;
+}
+.card:hover { transform: translateY(-5px); box-shadow: 0 10px 20px rgba(0,0,0,0.1); }
+
+.card-title { font-size: 18px; font-weight: 800; color: #2c3e50; margin-bottom: 20px; }
+
+.metric-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 20px; }
+.metric-card {
+    background-color: #f8f9fa; border-left: 4px solid #4fa3c4;
+    border-radius: 8px; padding: 15px; text-align: center;
+}
+.metric-title { font-size: 11px; color: #7f8c8d; text-transform: uppercase; font-weight: 700; }
+.metric-value { font-size: 24px; color: #2c3e50; font-weight: 800; margin-top: 5px; }
+</style>
+"""
 
 app_ui = ui.page_fluid(
-    ui.h2("Dashboard Exploratório de Dados"),
+    ui.HTML(custom_css),
+    ui.div(ui.h2(" Análise do dataset"), class_="header"),
 
     ui.layout_sidebar(
         ui.sidebar(
-            ui.h4("1. Configurações"),
-            ui.input_file("file_select", "Selecione o arquivo CSV:", accept=[".csv"], multiple=False, width="100%"),
-            ui.input_selectize("variable_select", "Selecione a variável numérica:", choices=[], width="100%"),
-            ui.hr(),
-            ui.h4("2. Estatísticas"),
-            ui.output_text_verbatim("stats_output"),
-            # Botão para a "Análise Geral" — só aparece após escolher o arquivo.
-            ui.output_ui("general_button"),
-            width=350
+            ui.h4(" Filtros", style="font-weight: 800;"),
+            ui.input_select("platform_select", "Plataforma:", choices={"all": "Todos"}),
+            ui.input_select("genre_select", "Gênero:", choices={"all": "Todos"}),
+            ui.input_select("publisher_select", "Publicadora:", choices={"all": "Todos"}),
+            ui.output_ui("sidebar_extra_filters"),
         ),
 
         ui.navset_tab(
             ui.nav_panel(
-                "Análise descritiva de uma variável",
+                " Analise Geral",
                 ui.div(
-                    ui.br(),
-                    ui.row(
-                        ui.column(6, ui.card(ui.h4("Histograma"), ui.output_plot("histogram"))),
-                        ui.column(6, ui.card(ui.h4("Boxplot"), ui.output_plot("boxplot")))
+                    ui.p(
+                        "Este dataset contém registros de vendas de jogos eletrônicos ao redor do mundo, "
+                        "com informações sobre plataforma, gênero, publicadora e vendas regionais (América do Norte, Europa, Japão e outros países).",
+                        style="margin: 0; color: #7f8c8d; font-size: 13px;"
                     ),
-                    ui.br(),
-                    ui.row(
-                        ui.column(12, ui.card(ui.h4("Amostra do Dataset"), ui.output_table("data_table")))
-                    ),
-                    style="padding: 10px;"
+                    class_="card"
+                ),
+                ui.div(
+                    ui.div(" Métricas Estatísticas", class_="card-title"),
+                    ui.output_ui("metrics_cards"),
+                    class_="card"
+                ),
+                ui.div(
+                    ui.div("Visualização Comparativa", class_="card-title"),
+                    ui.output_plot("dynamic_stat_bar"),
+                    class_="card"
+                ),
+                ui.div(
+                    ui.div(" Distribuição (Boxplot)", class_="card-title"),
+                    ui.output_plot("unified_sales_box"),
+                    class_="card"
                 )
-            )
+            ),
+            ui.nav_panel(
+                "Regressão Linear",
+                ui.div(
+                    ui.div("Configuração da Regressão", class_="card-title"),
+                    ui.row(
+                        ui.column(6, ui.input_select("reg_x", "Variável explicativa (x):", choices=TEST_VARS)),
+                        ui.column(6, ui.input_select("reg_y", "Variável resposta (y):", choices={k: v for k, v in TEST_VARS.items() if k != "Year"}, selected="Global_Sales")),
+                    ),
+                    class_="card"
+                ),
+                ui.div(
+                    ui.div("Resultados", class_="card-title"),
+                    ui.output_ui("regression_results"),
+                    class_="card"
+                ),
+                ui.div(
+                    ui.div("Gráfico de Dispersão com Linha de Regressão", class_="card-title"),
+                    ui.output_plot("regression_plot"),
+                    class_="card"
+                )
+            ),
+            ui.nav_panel(
+                "Teste de hipótese",
+                ui.div(
+                    ui.div("Teste para a média (variância conhecida)", class_="card-title"),
+                    ui.p("Variável e filtros aplicados; a variância inicia na variância amostral (ajustável).",
+                         style="color:#7f8c8d; font-size:13px;"),
+                    ui.row(
+                        ui.column(6, ui.input_select("test_var", "Variável quantitativa:", choices=TEST_VARS)),
+                        ui.column(6, ui.input_radio_buttons("test_type", "Tipo de teste:", choices=TEST_TYPES)),
+                    ),
+                    ui.input_numeric("var_pop", "Variância populacional (σ²):", value=1, min=0.0001),
+                    ui.input_slider("mu0", "Valor de μ₀:", min=0, max=10, value=5),
+                    ui.input_slider("alpha", "Nível de significância (α):", min=0.01, max=0.20, value=0.05, step=0.01),
+                    class_="card"
+                ),
+                ui.div(
+                    ui.div("Resultado do teste", class_="card-title"),
+                    ui.output_ui("hypothesis_result"),
+                    class_="card"
+                ),
+                ui.div(
+                    ui.div("Distribuição sob H₀ e estatística do teste", class_="card-title"),
+                    ui.output_plot("hypothesis_plot"),
+                    class_="card"
+                )
+            ),
+            id="tab_main",
         )
     )
 )
@@ -65,105 +181,239 @@ app_ui = ui.page_fluid(
 def server(input, output, session):
     @reactive.Calc
     def load_data():
-        file_info = input.file_select()
-        if not file_info: return None
-        try: return pd.read_csv(file_info[0]["datapath"])
-        except Exception: return None
-
-    # Colunas numéricas que são identificadores, não variáveis de análise.
-    ID_COLS = {"Rank", "id", "ID", "index"}
+        try:
+            csv_path = Path(__file__).resolve().parent / "data" / "vgsales.csv"
+            df = pd.read_csv(csv_path)
+            for col in ['Platform', 'Genre', 'Publisher']: df[col] = df[col].astype('category')
+            return df
+        except Exception:
+            return None
 
     @reactive.Effect
-    def update_variables():
+    def _update_filters():
         data = load_data()
         if data is not None:
-            numeric_cols = [c for c in data.select_dtypes(include=[np.number]).columns
-                            if c not in ID_COLS]
-            ui.update_selectize("variable_select", choices=numeric_cols)
+            ui.update_select("platform_select", choices={"all": "Todos"} | {p: p for p in sorted(data['Platform'].dropna().unique())})
+            ui.update_select("genre_select", choices={"all": "Todos"} | {g: g for g in sorted(data['Genre'].dropna().unique())})
+            ui.update_select("publisher_select", choices={"all": "Todos"} | {p: p for p in sorted(data['Publisher'].dropna().unique())})
 
-    # ---------- Botão da "Análise Geral" (gating + lançamento) ----------
+    @reactive.Calc
+    def get_filtered_data():
+        data = load_data()
+        if data is None: return None
+        p, g, pub = input.platform_select(), input.genre_select(), input.publisher_select()
+        if p != "all": data = data[data['Platform'] == p]
+        if g != "all": data = data[data['Genre'] == g]
+        if pub != "all": data = data[data['Publisher'] == pub]
+        return data
+
     @output
     @render.ui
-    def general_button():
-        if load_data() is None:
-            return None
-        return ui.div(
-            ui.hr(),
-            ui.input_action_button("open_dashboard", "Abrir Análise Geral", class_="btn-primary", width="100%"),
-            ui.output_ui("dashboard_link"),
-        )
+    def sidebar_extra_filters():
+        if input.tab_main() == " Analise Geral":
+            return ui.div(
+                ui.hr(),
+                ui.input_select("stat_factor", "Fator p/ Gráfico:", choices={"mean": "Média", "median": "Mediana", "std": "Desvio-Padrão", "count": "Amostra", "min": "Mínimo", "max": "Máximo"}),
+                ui.input_select("sales_metric", "Cartões de Detalhe:", choices={"Global_Sales": "Vendas Globais", "NA_Sales": "Vendas na América do Norte", "EU_Sales": "Vendas na Europa", "JP_Sales": "Vendas no Japão", "Other_Sales": "Vendas em outros Países"}),
+            )
+        return None
+
+    @reactive.Calc
+    def regression_data():
+        df = get_filtered_data()
+        if df is None or df.empty: return None
+        x_col, y_col = input.reg_x(), input.reg_y()
+        if x_col == y_col: return None
+        sub = df[[x_col, y_col]].dropna()
+        if len(sub) < 2: return None
+        x, y = sub[x_col].values, sub[y_col].values
+        slope, intercept, r, _, _ = linregress(x, y)
+        return {"x": x, "y": y, "slope": slope, "intercept": intercept, "r": r,
+                "x_col": x_col, "y_col": y_col}
+
+    @output
+    @render.ui
+    def regression_results():
+        res = regression_data()
+        if res is None:
+            return ui.p("Selecione duas variáveis diferentes.", style="color:#7f8c8d;")
+        slope, intercept, r = res["slope"], res["intercept"], res["r"]
+        r2 = r ** 2
+        sinal = "+" if intercept >= 0 else "-"
+        equacao = f"ŷ = {slope:.4f}x {sinal} {abs(intercept):.4f}"
+        linhas = {
+            "Coeficiente de correlação (R)": f"{r:.4f}",
+            "Coeficiente de determinação (R²)": f"{r2:.4f}",
+            "Equação da reta": equacao,
+        }
+        itens = [ui.tags.li(ui.tags.b(f"{k}: "), v) for k, v in linhas.items()]
+        return ui.tags.ul(*itens, style="list-style:none; padding-left:0; font-size:15px;")
+
+    @output
+    @render.plot
+    def regression_plot():
+        res = regression_data()
+        if res is None: return None
+        x, y = res["x"], res["y"]
+        slope, intercept = res["slope"], res["intercept"]
+        x_line = np.array([x.min(), x.max()])
+        y_line = slope * x_line + intercept
+
+        fig, ax = plt.subplots(figsize=(8, 4), facecolor='none')
+        ax.scatter(x, y, color='#4fa3c4', alpha=0.5, edgecolors='none', s=20)
+        ax.plot(x_line, y_line, color='#e74c3c', linewidth=2,
+                label=f"ŷ = {slope:.4f}x {'+ ' if intercept >= 0 else '- '}{abs(intercept):.4f}")
+        ax.set_xlabel(TEST_VARS[res["x_col"]], color='#7f8c8d')
+        ax.set_ylabel(TEST_VARS[res["y_col"]], color='#7f8c8d')
+        ax.set_facecolor('none')
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+        ax.spines['left'].set_color('#ecf0f1')
+        ax.spines['bottom'].set_color('#ecf0f1')
+        ax.tick_params(colors='#7f8c8d')
+        ax.legend(fontsize=9, frameon=False)
+        return fig
+
+    @reactive.Calc
+    def get_test_sample():
+        df = get_filtered_data()
+        if df is None or df.empty: return None
+        return df[input.test_var()].dropna()
 
     @reactive.Effect
-    @reactive.event(input.open_dashboard)
-    def _launch_dashboard():
-        ensure_dashboard_running()
+    def _update_mu0_slider():
+        sample = get_test_sample()
+        if sample is None or len(sample) == 0: return
+        lo, hi = float(sample.min()), float(sample.max())
+        if lo == hi: hi = lo + 1
+        raw = (hi - lo) / 100 or 0.01
+        step = max(1, round(raw)) if raw >= 1 else round(raw, 4)
+        ui.update_slider("mu0", min=round(lo, 4), max=round(hi, 4),
+                         value=round(float(sample.mean()), 4), step=step)
+
+    @reactive.Effect
+    def _update_var_pop():
+        sample = get_test_sample()
+        if sample is None or len(sample) < 2: return
+        ui.update_numeric("var_pop", value=round(float(sample.var()), 4))
+
+    @reactive.Calc
+    def test_result():
+        sample = get_test_sample()
+        if sample is None: return None
+        return z_test_mean_known_variance(
+            sample, input.mu0(), input.var_pop(), input.test_type(), input.alpha()
+        )
 
     @output
     @render.ui
-    def dashboard_link():
-        if not input.open_dashboard():
-            return None
-        # Abre numa nova aba e deixa o link como fallback (popup pode ser bloqueado).
+    def hypothesis_result():
+        if get_test_sample() is None: return ui.p("Sem dados para o filtro selecionado.")
+        res = test_result()
+        if res is None:
+            return ui.p("Informe uma variância populacional positiva.", style="color:#c0392b;")
+
+        decisao = "Rejeita-se H₀" if res["reject"] else "Não se rejeita H₀"
+        cor = "#c0392b" if res["reject"] else "#27ae60"
+        linhas = {
+            "Hipótese H₀": f"μ = {input.mu0()}",
+            "Tipo de teste": TEST_TYPES[input.test_type()],
+            "Tamanho da amostra (n)": res["n"],
+            "Média amostral (x̄)": f"{res['xbar']:.4f}",
+            "Desvio-padrão (σ)": f"{res['sigma']:.4f}",
+            "Estatística do teste (Z)": f"{res['z']:.4f}",
+            "Valor crítico": f"{res['critical']:.4f}",
+            "p-valor": f"{res['p_value']:.4f}",
+        }
+        itens = [ui.tags.li(ui.tags.b(f"{k}: "), str(v)) for k, v in linhas.items()]
         return ui.div(
-            ui.tags.script(f"window.open('{DASHBOARD_URL}', '_blank');"),
-            ui.p("Aguarde alguns segundos e, se a aba não abrir, clique abaixo:", style="margin-top:10px;"),
-            ui.a("Abrir Análise Geral em nova aba", href=DASHBOARD_URL, target="_blank"),
+            ui.tags.ul(*itens, style="list-style:none; padding-left:0;"),
+            ui.div(decisao, style=f"font-size:20px; font-weight:800; color:{cor}; margin-top:10px;"),
         )
 
-    # ---------- Aba descritiva ----------
-    @reactive.Calc
-    def calculate_stats():
-        data = load_data()
-        var = input.variable_select()
-        if data is None or not var: return None
+    @output
+    @render.plot
+    def hypothesis_plot():
+        res = test_result()
+        if res is None: return None
+        z, crit, tipo = res["z"], res["critical"], input.test_type()
 
-        col = data[var].dropna()
-        if len(col) == 0: return None
-        return {
-            'N': len(col), 'Média': col.mean(), 'Mediana': col.median(),
-            'Desvio-padrão': col.std(), 'Mínimo': col.min(), 'Máximo': col.max()
-        }
+        lim = max(4.0, abs(z) + 1)
+        x = np.linspace(-lim, lim, 500)
+        y = norm.pdf(x)
+
+        fig, ax = plt.subplots(figsize=(8, 3.2), facecolor='none')
+        ax.plot(x, y, color='#2c3e50')
+
+        if tipo == "greater":
+            ax.fill_between(x, y, where=(x >= crit), color='#e74c3c', alpha=0.3)
+            ax.axvline(crit, color='#e74c3c', ls='--', label=f'Crítico = {crit:.2f}')
+        elif tipo == "less":
+            ax.fill_between(x, y, where=(x <= crit), color='#e74c3c', alpha=0.3)
+            ax.axvline(crit, color='#e74c3c', ls='--', label=f'Crítico = {crit:.2f}')
+        else:
+            ax.fill_between(x, y, where=(x >= crit), color='#e74c3c', alpha=0.3)
+            ax.fill_between(x, y, where=(x <= -crit), color='#e74c3c', alpha=0.3)
+            ax.axvline(crit, color='#e74c3c', ls='--', label=f'Crítico = ±{crit:.2f}')
+            ax.axvline(-crit, color='#e74c3c', ls='--')
+
+        ax.axvline(0, color='#bdc3c7', ls=':')
+        ax.axvline(z, color='#2980b9', lw=2, label=f'Z calc = {z:.2f}')
+
+        ax.set_yticks([])
+        ax.set_xlabel('Z')
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+        ax.spines['left'].set_visible(False)
+        ax.legend(loc='upper right', fontsize=9, frameon=False)
+        return fig
 
     @output
-    @render.text
-    def stats_output():
-        stats = calculate_stats()
-        if stats is None: return "Aguardando seleção..."
-
-        def fmt(v):
-            # Inteiro quando o valor não tem parte fracionária (ex.: Year),
-            # decimal nos demais casos (ex.: vendas).
-            return str(int(v)) if float(v).is_integer() else f"{v:.4f}"
-
-        return "".join(f"{k}: {fmt(v)}\n" for k, v in stats.items())
+    @render.ui
+    def metrics_cards():
+        df = get_filtered_data()
+        if df is None or df.empty: return None
+        dados = df[input.sales_metric()].dropna()
+        metrics = {"Amostra": len(dados), "Média": f"{dados.mean():.2f}", "Mediana": f"{dados.median():.2f}", "Desvio-P": f"{dados.std():.2f}", "Mín": dados.min(), "Máx": dados.max()}
+        cards = [ui.div(ui.div(k, class_="metric-title"), ui.div(v, class_="metric-value"), class_="metric-card") for k, v in metrics.items()]
+        return ui.div(*cards, class_="metric-grid")
 
     @output
     @render.plot
-    def histogram():
-        data = load_data()
-        var = input.variable_select()
-        if data is None or not var: return None
-        fig, ax = plt.subplots()
-        ax.hist(data[var].dropna(), bins=30, color='#4fa3c4', edgecolor='black')
-        ax.set_title(f'Histograma de {var}')
+    def dynamic_stat_bar():
+        df = get_filtered_data()
+        if df is None or df.empty: return None
+        fator = input.stat_factor()
+        agg_map = {"mean": "mean", "median": "median", "std": "std", "count": "count", "min": "min", "max": "max"}
+
+        data_stats = df[['NA_Sales', 'EU_Sales', 'JP_Sales', 'Other_Sales']].agg(agg_map[fator])
+
+        fig, ax = plt.subplots(figsize=(8, 3), facecolor='none')
+        data_stats.plot(kind='bar', ax=ax, color='#4fa3c4', edgecolor='none', width=0.6)
+
+        ax.set_facecolor('none')
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+        ax.spines['left'].set_color('#ecf0f1')
+        ax.spines['bottom'].set_color('#ecf0f1')
+        ax.tick_params(axis='x', rotation=0, colors='#7f8c8d')
+        ax.tick_params(axis='y', colors='#7f8c8d')
         return fig
 
     @output
     @render.plot
-    def boxplot():
-        data = load_data()
-        var = input.variable_select()
-        if data is None or not var: return None
-        fig, ax = plt.subplots()
-        ax.boxplot(data[var].dropna(), vert=True, patch_artist=True, boxprops=dict(facecolor='#4fa3c4'))
-        ax.set_title(f'Boxplot de {var}')
-        return fig
+    def unified_sales_box():
+        df = get_filtered_data()
+        if df is None or df.empty: return None
+        df_melt = df.melt(value_vars=['NA_Sales', 'EU_Sales', 'JP_Sales', 'Other_Sales'], var_name='Região', value_name='Vendas')
+        fig, ax = plt.subplots(figsize=(8, 3), facecolor='none')
+        sns.boxplot(data=df_melt, x='Região', y='Vendas', ax=ax, color='#a2d2ff', flierprops=dict(markerfacecolor='#4fa3c4', markeredgecolor='none'))
 
-    @output
-    @render.table
-    def data_table():
-        data = load_data()
-        if data is None: return pd.DataFrame()
-        return data.head(15)
+        ax.set_facecolor('none')
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+        ax.spines['left'].set_color('#ecf0f1')
+        ax.spines['bottom'].set_color('#ecf0f1')
+        return fig
 
 app = App(app_ui, server)
