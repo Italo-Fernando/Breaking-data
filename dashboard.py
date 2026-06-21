@@ -3,7 +3,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
 from pathlib import Path
-from scipy.stats import norm
+from scipy.stats import norm, linregress
 from shiny import App, render, ui, reactive
 
 # --- Configuração do Visual ---
@@ -126,6 +126,27 @@ app_ui = ui.page_fluid(
                 )
             ),
             ui.nav_panel(
+                "Regressão Linear",
+                ui.div(
+                    ui.div("Configuração da Regressão", class_="card-title"),
+                    ui.row(
+                        ui.column(6, ui.input_select("reg_x", "Variável explicativa (x):", choices=TEST_VARS)),
+                        ui.column(6, ui.input_select("reg_y", "Variável resposta (y):", choices={k: v for k, v in TEST_VARS.items() if k != "Year"}, selected="Global_Sales")),
+                    ),
+                    class_="card"
+                ),
+                ui.div(
+                    ui.div("Resultados", class_="card-title"),
+                    ui.output_ui("regression_results"),
+                    class_="card"
+                ),
+                ui.div(
+                    ui.div("Gráfico de Dispersão com Linha de Regressão", class_="card-title"),
+                    ui.output_plot("regression_plot"),
+                    class_="card"
+                )
+            ),
+            ui.nav_panel(
                 "Teste de hipótese",
                 ui.div(
                     ui.div("Teste para a média (variância conhecida)", class_="card-title"),
@@ -183,6 +204,63 @@ def server(input, output, session):
         if g != "all": data = data[data['Genre'] == g]
         if pub != "all": data = data[data['Publisher'] == pub]
         return data
+
+    @reactive.Calc
+    def regression_data():
+        # Ajuste de mínimos quadrados entre as duas variáveis selecionadas, sobre os dados filtrados.
+        df = get_filtered_data()
+        if df is None or df.empty: return None
+        x_col, y_col = input.reg_x(), input.reg_y()
+        if x_col == y_col: return None
+        sub = df[[x_col, y_col]].dropna()
+        if len(sub) < 2: return None
+        x, y = sub[x_col].values, sub[y_col].values
+        slope, intercept, r, _, _ = linregress(x, y)
+        return {"x": x, "y": y, "slope": slope, "intercept": intercept, "r": r,
+                "x_col": x_col, "y_col": y_col}
+
+    @output
+    @render.ui
+    def regression_results():
+        res = regression_data()
+        if res is None:
+            return ui.p("Selecione duas variáveis diferentes.", style="color:#7f8c8d;")
+        slope, intercept, r = res["slope"], res["intercept"], res["r"]
+        r2 = r ** 2
+        sinal = "+" if intercept >= 0 else "-"
+        equacao = f"ŷ = {slope:.4f}x {sinal} {abs(intercept):.4f}"
+        linhas = {
+            "Coeficiente de correlação (R)": f"{r:.4f}",
+            "Coeficiente de determinação (R²)": f"{r2:.4f}",
+            "Equação da reta": equacao,
+        }
+        itens = [ui.tags.li(ui.tags.b(f"{k}: "), v) for k, v in linhas.items()]
+        return ui.tags.ul(*itens, style="list-style:none; padding-left:0; font-size:15px;")
+
+    @output
+    @render.plot
+    def regression_plot():
+        res = regression_data()
+        if res is None: return None
+        x, y = res["x"], res["y"]
+        slope, intercept = res["slope"], res["intercept"]
+        x_line = np.array([x.min(), x.max()])
+        y_line = slope * x_line + intercept
+
+        fig, ax = plt.subplots(figsize=(8, 4), facecolor='none')
+        ax.scatter(x, y, color='#4fa3c4', alpha=0.5, edgecolors='none', s=20)
+        ax.plot(x_line, y_line, color='#e74c3c', linewidth=2,
+                label=f"ŷ = {slope:.4f}x {'+ ' if intercept >= 0 else '- '}{abs(intercept):.4f}")
+        ax.set_xlabel(TEST_VARS[res["x_col"]], color='#7f8c8d')
+        ax.set_ylabel(TEST_VARS[res["y_col"]], color='#7f8c8d')
+        ax.set_facecolor('none')
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+        ax.spines['left'].set_color('#ecf0f1')
+        ax.spines['bottom'].set_color('#ecf0f1')
+        ax.tick_params(colors='#7f8c8d')
+        ax.legend(fontsize=9, frameon=False)
+        return fig
 
     @reactive.Calc
     def get_test_sample():
